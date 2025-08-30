@@ -90,7 +90,7 @@
 
     <!-- JavaScript モジュール -->
     <script type="module">
-        import { Muxer, ArrayBufferTarget } from 'https://unpkg.com/mp4-muxer/build/mp4-muxer.mjs';
+        import { Muxer, ArrayBufferTarget } from 'https://unpkg.com/mp4-muxer@4.3.3/dist/mp4-muxer.mjs';
 
         function initializeApp() {
             console.log("initializeApp: Application initialization started.");
@@ -364,7 +364,19 @@
                         fastStart: 'in-memory'
                     });
 
-                    let videoEncoder = new VideoEncoder({ output: (chunk, meta) => muxer.addVideoChunk(chunk, meta), error: (e) => console.error(e) });
+                    let cachedVideoDecoderConfig = null;
+                    let videoEncoder = new VideoEncoder({
+                      output: (chunk, meta) => {
+                        // Safari は meta.decoderConfig が来ないことがあるので補完する
+                        if (meta?.decoderConfig) cachedVideoDecoderConfig = meta.decoderConfig;
+                        const safeMeta = (meta && meta.decoderConfig)
+                          ? meta
+                          : (cachedVideoDecoderConfig ? { ...meta, decoderConfig: cachedVideoDecoderConfig } : meta);
+                        muxer.addVideoChunk(chunk, safeMeta);
+                      },
+                      error: (e) => console.error(e)
+                    });
+
                     videoEncoder.configure({ codec: 'avc1.42e01f', width: VIDEO_WIDTH, height: VIDEO_HEIGHT, bitrate: 5_000_000, framerate: FPS });
                     
                     let audioEncoder;
