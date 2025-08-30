@@ -1,0 +1,500 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Reels Video Creator</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* ダークモードを基本スタイルに */
+        body {
+            background-color: #121212;
+            color: #e0e0e0;
+            font-family: 'Inter', sans-serif;
+        }
+        .card {
+            background-color: #1e1e1e;
+            border: 1px solid #333;
+        }
+        .btn-primary {
+            background-color: #6366f1;
+            transition: background-color 0.3s;
+        }
+        .btn-primary:hover {
+            background-color: #4f46e5;
+        }
+        .btn-secondary {
+            background-color: #374151;
+            transition: background-color: 0.3s;
+        }
+        .btn-secondary:hover {
+            background-color: #4b5563;
+        }
+        .btn-danger {
+            background-color: #ef4444;
+            transition: background-color: 0.3s;
+        }
+        .btn-danger:hover {
+            background-color: #dc2626;
+        }
+        input[type="text"], input[type="number"], input[type="file"] {
+            background-color: #2d2d2d;
+            border: 1px solid #444;
+            color: #e0e0e0;
+        }
+        /* スピナーアニメーション */
+        .spinner {
+            border: 4px solid rgba(255, 255, 255, 0.3);
+            border-radius: 50%;
+            border-top: 4px solid #6366f1;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700&family=Noto+Sans+JP:wght@400;500;700&display=swap" rel="stylesheet">
+</head>
+<body class="p-4 md:p-8">
+    <div class="max-w-4xl mx-auto">
+        <!-- ヘッダー -->
+        <header class="text-center mb-8">
+            <h1 class="text-3xl md:text-4xl font-bold text-white">Reels Video Creator</h1>
+            <p class="text-gray-400 mt-2">画像や動画を組み合わせて縦長動画を作成します</p>
+        </header>
+
+        <!-- メインコンテンツ -->
+        <main>
+            <!-- アセット追加セクション -->
+            <div id="assets-container" class="space-y-4 mb-6">
+                <!-- アセットはここに動的に追加されます -->
+            </div>
+            <button id="add-asset-btn" class="w-full py-2 px-4 rounded-lg btn-secondary font-semibold text-white mb-6">
+                + クリップを追加 (最大5つ)
+            </button>
+
+            <!-- BGMセクション -->
+            <div class="card p-4 rounded-lg mb-6">
+                <h2 class="text-xl font-semibold mb-3">BGM設定</h2>
+                <label for="bgm-file" class="block text-sm font-medium text-gray-300 mb-2">BGM音声ファイル (MP3, M4A, WAV)</label>
+                <input type="file" id="bgm-file" accept="audio/mpeg,audio/mp4,audio/wav" class="w-full text-sm rounded-lg cursor-pointer focus:outline-none">
+            </div>
+            
+            <!-- 生成セクション -->
+            <div class="text-center">
+                 <button id="generate-btn" class="w-full md:w-1/2 py-3 px-6 rounded-lg btn-primary font-bold text-lg text-white disabled:opacity-50 disabled:cursor-not-allowed" disabled>
+                    動画を生成する
+                </button>
+            </div>
+
+            <!-- 処理状況と結果表示 -->
+            <div id="status-container" class="mt-8 text-center hidden">
+                <div class="flex justify-center items-center mb-4">
+                    <div class="spinner"></div>
+                </div>
+                <p id="status-message" class="text-lg font-semibold text-gray-300"></p>
+                <div class="w-full bg-gray-600 rounded-full h-2.5 mt-2">
+                    <div id="progress-bar" class="bg-indigo-500 h-2.5 rounded-full" style="width: 0%"></div>
+                </div>
+            </div>
+
+            <div id="result-container" class="mt-8 text-center hidden">
+                <h2 class="text-2xl font-semibold mb-4">🎉 完成しました！ 🎉</h2>
+                <video id="result-video" class="w-full max-w-sm mx-auto rounded-lg border-2 border-gray-600" controls></video>
+                <a id="download-link" class="mt-6 inline-block w-full md:w-1/2 py-3 px-6 rounded-lg btn-primary font-bold text-lg text-white">
+                    動画をダウンロード
+                </a>
+            </div>
+        </main>
+    </div>
+
+    <!-- JavaScript モジュール -->
+    <script type="module">
+        // mp4-muxerをCDNからインポート
+        import { Muxer, ArrayBufferTarget } from 'https://unpkg.com/mp4-muxer@2.0.1/build/mp4-muxer.mjs';
+
+        function initializeApp() {
+            // --- DOM要素 ---
+            const assetsContainer = document.getElementById('assets-container');
+            const addAssetBtn = document.getElementById('add-asset-btn');
+            const bgmFileInput = document.getElementById('bgm-file');
+            const generateBtn = document.getElementById('generate-btn');
+            const statusContainer = document.getElementById('status-container');
+            const statusMessage = document.getElementById('status-message');
+            const progressBar = document.getElementById('progress-bar');
+            const resultContainer = document.getElementById('result-container');
+            const resultVideo = document.getElementById('result-video');
+            const downloadLink = document.getElementById('download-link');
+            
+            // --- 状態管理 ---
+            // Start with one default clip for better user experience
+            let assets = [{ id: Date.now(), file: null, type: 'image', subtitle: '', duration: 3, previewUrl: null }];
+            const MAX_ASSETS = 5;
+
+            // --- 動画設定 ---
+            const VIDEO_WIDTH = 720;
+            const VIDEO_HEIGHT = 1280;
+            const FPS = 30;
+
+            // --- UI更新ロジック ---
+
+            function renderAssets() {
+                assetsContainer.innerHTML = '';
+                assets.forEach((asset, index) => {
+                    const assetEl = document.createElement('div');
+                    assetEl.className = 'card p-4 rounded-lg flex flex-col md:flex-row gap-4 items-center';
+                    assetEl.innerHTML = `
+                        <div class="flex-shrink-0 w-24 h-40 bg-black rounded-md flex items-center justify-center overflow-hidden">
+                            ${asset.previewUrl ? 
+                                (asset.type === 'video' ? `<video src="${asset.previewUrl}" class="w-full h-full object-cover" muted loop autoplay playsinline></video>` : `<img src="${asset.previewUrl}" class="w-full h-full object-cover">`)
+                                : '<span class="text-gray-500 text-xs">プレビュー</span>'
+                            }
+                        </div>
+                        <div class="flex-grow w-full">
+                            <label class="block text-sm font-medium text-gray-300 mb-2">クリップ ${index + 1}</label>
+                            <input type="file" data-index="${index}" accept="image/*,video/mp4,video/webm,video/quicktime" class="file-input w-full text-sm rounded-lg cursor-pointer focus:outline-none mb-2">
+                            <input type="text" data-index="${index}" value="${asset.subtitle}" placeholder="字幕 (任意)" class="subtitle-input w-full p-2 rounded-md mb-2">
+                            ${asset.type !== 'video' ? 
+                                `<div class="flex items-center gap-2">
+                                    <label class="text-sm">表示時間(秒):</label>
+                                    <input type="number" data-index="${index}" value="${asset.duration}" min="0.1" step="0.1" class="duration-input w-20 p-2 rounded-md">
+                                </div>` : 
+                                `<div class="text-sm text-gray-400">動画の長さ: ${asset.duration.toFixed(1)}秒</div>`
+                            }
+                        </div>
+                        <button data-index="${index}" class="remove-btn flex-shrink-0 p-2 rounded-full btn-danger text-white">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm4 0a1 1 0 012 0v6a1 1 0 11-2 0V8z" clip-rule="evenodd" /></svg>
+                        </button>
+                    `;
+                    assetsContainer.appendChild(assetEl);
+                });
+                updateGenerateBtnState();
+            }
+
+            function updateGenerateBtnState() {
+                const hasAssets = assets.length > 0 && assets.every(a => a.file);
+                addAssetBtn.disabled = assets.length >= MAX_ASSETS;
+                addAssetBtn.classList.toggle('opacity-50', assets.length >= MAX_ASSETS);
+                generateBtn.disabled = !hasAssets;
+            }
+
+            // --- イベントリスナー ---
+
+            addAssetBtn.addEventListener('click', () => {
+                if (assets.length < MAX_ASSETS) {
+                    assets.push({ id: Date.now(), file: null, type: 'image', subtitle: '', duration: 3, previewUrl: null });
+                    renderAssets();
+                }
+            });
+
+            assetsContainer.addEventListener('change', async (e) => {
+                const index = parseInt(e.target.dataset.index);
+                if (e.target.classList.contains('file-input')) {
+                    const file = e.target.files[0];
+                    if (file) {
+                        assets[index].file = file;
+                        assets[index].type = file.type.startsWith('video') ? 'video' : 'image';
+                        assets[index].previewUrl = URL.createObjectURL(file);
+                        if (assets[index].type === 'video') {
+                            const duration = await getVideoDuration(file);
+                            assets[index].duration = duration;
+                        }
+                    }
+                } else if (e.target.classList.contains('subtitle-input')) {
+                    assets[index].subtitle = e.target.value;
+                } else if (e.target.classList.contains('duration-input')) {
+                    assets[index].duration = parseFloat(e.target.value) || 3;
+                }
+                renderAssets();
+            });
+
+            assetsContainer.addEventListener('click', (e) => {
+                const removeBtn = e.target.closest('.remove-btn');
+                if (removeBtn) {
+                    const index = parseInt(removeBtn.dataset.index);
+
+                    // もしクリップが最後の1つなら、削除せずリセットする
+                    if (assets.length === 1) {
+                        // メモリ解放
+                        if (assets[index].previewUrl) {
+                            URL.revokeObjectURL(assets[index].previewUrl);
+                        }
+                        // 初期状態にリセット
+                        assets[0] = { id: Date.now(), file: null, type: 'image', subtitle: '', duration: 3, previewUrl: null };
+                    } else {
+                        // メモリ解放
+                        if (assets[index].previewUrl) {
+                            URL.revokeObjectURL(assets[index].previewUrl);
+                        }
+                        assets.splice(index, 1);
+                    }
+                    renderAssets();
+                }
+            });
+
+            generateBtn.addEventListener('click', generateVideo);
+            
+            // --- 補助関数 ---
+            async function getVideoDuration(file) {
+                return new Promise((resolve) => {
+                    const video = document.createElement('video');
+                    video.preload = 'metadata';
+                    video.onloadedmetadata = () => {
+                        URL.revokeObjectURL(video.src);
+                        resolve(video.duration);
+                    };
+                    video.src = URL.createObjectURL(file);
+                });
+            }
+            
+            function updateProgress(message, percentage) {
+                statusMessage.textContent = message;
+                progressBar.style.width = `${percentage}%`;
+            }
+
+            // --- メインの動画生成ロジック ---
+            async function generateVideo() {
+                if (!('VideoEncoder' in window)) {
+                    // alert() は使えない環境を想定し、UIにメッセージを出す
+                    statusMessage.textContent = 'エラー: お使いのブラウザはこのツールをサポートしていません。';
+                    statusContainer.classList.remove('hidden');
+                    return;
+                }
+                
+                // UIを処理中状態に
+                generateBtn.disabled = true;
+                generateBtn.textContent = '処理中...';
+                statusContainer.classList.remove('hidden');
+                resultContainer.classList.add('hidden');
+                updateProgress('準備中...', 0);
+
+                try {
+                    let totalDuration = assets.reduce((sum, a) => sum + a.duration, 0);
+                    let muxer = new Muxer({
+                        target: new ArrayBufferTarget(),
+                        video: {
+                            codec: 'avc',
+                            width: VIDEO_WIDTH,
+                            height: VIDEO_HEIGHT,
+                        },
+                        audio: bgmFileInput.files[0] ? {
+                            codec: 'aac',
+                            sampleRate: 44100,
+                            numberOfChannels: 2,
+                        } : undefined,
+                        fastStart: 'fragmented'
+                    });
+
+                    let videoEncoder = new VideoEncoder({
+                        output: (chunk, meta) => muxer.addVideoChunk(chunk, meta),
+                        error: (e) => console.error(e)
+                    });
+                    videoEncoder.configure({
+                        codec: 'avc1.42001f', // Baseline profile
+                        width: VIDEO_WIDTH,
+                        height: VIDEO_HEIGHT,
+                        bitrate: 5_000_000, // 5 Mbps
+                        framerate: FPS
+                    });
+                    
+                    let audioEncoder;
+                    let audioContext;
+                    let bgmBuffer;
+
+                    if (bgmFileInput.files[0]) {
+                        updateProgress('BGMをデコード中...', 5);
+                        audioContext = new AudioContext({ sampleRate: 44100 });
+                        const bgmArrayBuffer = await bgmFileInput.files[0].arrayBuffer();
+                        bgmBuffer = await audioContext.decodeAudioData(bgmArrayBuffer);
+
+                        audioEncoder = new AudioEncoder({
+                            output: (chunk, meta) => muxer.addAudioChunk(chunk, meta),
+                            error: (e) => console.error(e)
+                        });
+                        audioEncoder.configure({
+                            codec: 'mp4a.40.2',
+                            sampleRate: 44100,
+                            numberOfChannels: 2,
+                            bitrate: 128_000,
+                        });
+                    }
+                    
+                    // Canvasの準備
+                    const canvas = document.createElement('canvas');
+                    canvas.width = VIDEO_WIDTH;
+                    canvas.height = VIDEO_HEIGHT;
+                    const ctx = canvas.getContext('2d');
+
+                    let frameCounter = 0;
+                    let currentAssetIndex = 0;
+                    let timeInCurrentAsset = 0;
+                    let elapsed = 0;
+
+                    // 各アセットのデコード準備
+                    updateProgress('クリップを準備中...', 10);
+                    const assetData = await Promise.all(assets.map(async (asset) => {
+                        if (asset.type === 'video') {
+                           const videoEl = document.createElement('video');
+                           videoEl.src = URL.createObjectURL(asset.file);
+                           videoEl.muted = true;
+                           
+                           // seekが正確に行われるようにメタデータを待つ
+                           await new Promise((resolve, reject) => {
+                             videoEl.onloadedmetadata = resolve;
+                             videoEl.onerror = reject;
+                           });
+
+                           return { type: 'video', element: videoEl };
+                        } else { // image
+                            const bitmap = await createImageBitmap(asset.file);
+                            return { type: 'image', element: bitmap };
+                        }
+                    }));
+
+
+                    while (elapsed < totalDuration) {
+                        let timestamp = (frameCounter * 1_000_000) / FPS;
+                        
+                        if (timeInCurrentAsset >= assets[currentAssetIndex].duration) {
+                            timeInCurrentAsset = 0;
+                            currentAssetIndex++;
+                            if (currentAssetIndex >= assets.length) break;
+                        }
+                        
+                        const currentAsset = assets[currentAssetIndex];
+                        const data = assetData[currentAssetIndex];
+
+                        ctx.fillStyle = 'black';
+                        ctx.fillRect(0, 0, VIDEO_WIDTH, VIDEO_HEIGHT);
+
+                        // アセットを描画
+                        const el = data.element;
+                        const elAspect = (el.videoWidth || el.width) / (el.videoHeight || el.height);
+                        const canvasAspect = VIDEO_WIDTH / VIDEO_HEIGHT;
+                        let drawWidth, drawHeight, offsetX, offsetY;
+                        
+                        if (elAspect > canvasAspect) { // 横長 -> 縦に合わせる
+                            drawHeight = VIDEO_HEIGHT;
+                            drawWidth = drawHeight * elAspect;
+                            offsetX = (VIDEO_WIDTH - drawWidth) / 2;
+                            offsetY = 0;
+                        } else { // 縦長 -> 横に合わせる
+                            drawWidth = VIDEO_WIDTH;
+                            drawHeight = drawWidth / elAspect;
+                            offsetY = (VIDEO_HEIGHT - drawHeight) / 2;
+                            offsetX = 0;
+                        }
+
+                        if (data.type === 'video') {
+                            el.currentTime = timeInCurrentAsset;
+                            await new Promise(r => {
+                                if (el.readyState >= 3) { // HAVE_FUTURE_DATA
+                                    r();
+                                } else {
+                                    el.onseeked = r;
+                                }
+                            });
+                            ctx.drawImage(el, offsetX, offsetY, drawWidth, drawHeight);
+                        } else {
+                            ctx.drawImage(el, offsetX, offsetY, drawWidth, drawHeight);
+                        }
+                        
+                        // 字幕を描画
+                        if (currentAsset.subtitle) {
+                            ctx.font = 'bold 52px "Noto Sans JP", sans-serif';
+                            ctx.textAlign = 'center';
+                            ctx.fillStyle = 'white';
+                            ctx.shadowColor = 'black';
+                            ctx.shadowBlur = 10;
+                            const textY = VIDEO_HEIGHT * 0.8;
+                            ctx.fillText(currentAsset.subtitle, VIDEO_WIDTH / 2, textY);
+                            ctx.shadowBlur = 0;
+                        }
+                        
+                        // フレームをエンコード
+                        const frame = new VideoFrame(canvas, { timestamp });
+                        videoEncoder.encode(frame);
+                        frame.close();
+                        
+                        // オーディオをエンコード
+                        if (audioEncoder && bgmBuffer) {
+                            const audioStart = Math.floor(elapsed * bgmBuffer.sampleRate);
+                            const audioEnd = Math.floor((elapsed + 1/FPS) * bgmBuffer.sampleRate);
+                            const frameSamples = audioEnd - audioStart;
+                            if (frameSamples > 0) {
+                                const audioData = new Float32Array(frameSamples * bgmBuffer.numberOfChannels);
+                                for (let channel = 0; channel < bgmBuffer.numberOfChannels; channel++) {
+                                    const channelData = bgmBuffer.getChannelData(channel);
+                                    const outputChannelOffset = channel * frameSamples;
+                                    for (let i = 0; i < frameSamples; i++) {
+                                        audioData[outputChannelOffset + i] = channelData[(audioStart + i) % channelData.length];
+                                    }
+                                }
+
+                                const audioFrame = new AudioData({
+                                    format: 'f32-planar',
+                                    sampleRate: bgmBuffer.sampleRate,
+                                    numberOfFrames: frameSamples,
+                                    numberOfChannels: bgmBuffer.numberOfChannels,
+                                    timestamp: timestamp,
+                                    data: audioData,
+                                });
+                                audioEncoder.encode(audioFrame);
+                                audioFrame.close();
+                            }
+                        }
+
+                        frameCounter++;
+                        const timePerFrame = 1 / FPS;
+                        timeInCurrentAsset += timePerFrame;
+                        elapsed += timePerFrame;
+                        
+                        updateProgress(`フレームを処理中: ${frameCounter}/${Math.ceil(totalDuration * FPS)}`, 15 + 80 * (elapsed / totalDuration));
+                    }
+
+                    updateProgress('最終処理中...', 95);
+                    await videoEncoder.flush();
+                    if (audioEncoder) await audioEncoder.flush();
+                    muxer.finalize();
+                    
+                    const { buffer } = muxer.target;
+                    const blob = new Blob([buffer], { type: 'video/mp4' });
+                    const url = URL.createObjectURL(blob);
+
+                    resultVideo.src = url;
+                    downloadLink.href = url;
+                    downloadLink.download = `reels-video-${Date.now()}.mp4`;
+
+                    statusContainer.classList.add('hidden');
+                    resultContainer.classList.remove('hidden');
+
+                } catch (err) {
+                    console.error(err);
+                    statusMessage.textContent = `エラーが発生しました: ${err.message}`;
+                    progressBar.style.backgroundColor = 'red';
+                } finally {
+                    generateBtn.disabled = false;
+                    generateBtn.textContent = '動画を生成する';
+                }
+            }
+
+            // --- 初期化 ---
+            renderAssets();
+        }
+
+        // DOMが完全に読み込まれてからアプリを初期化することで、
+        // 稀なタイミング問題を回避し、動作の安定性を高めます。
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', initializeApp);
+        } else {
+            initializeApp();
+        }
+
+    </script>
+</body>
+</html>
