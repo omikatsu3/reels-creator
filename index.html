@@ -335,11 +335,11 @@
                         target: new ArrayBufferTarget(),
                         video: { codec: 'avc', width: VIDEO_WIDTH, height: VIDEO_HEIGHT },
                         audio: finalAudioBuffer ? { codec: 'aac', sampleRate: AUDIO_SAMPLE_RATE, numberOfChannels: 2 } : undefined,
-                        fastStart: 'fragmented'
+                        fastStart: true
                     });
 
                     let videoEncoder = new VideoEncoder({ output: (chunk, meta) => muxer.addVideoChunk(chunk, meta), error: (e) => console.error(e) });
-                    videoEncoder.configure({ codec: 'avc1.42001f', width: VIDEO_WIDTH, height: VIDEO_HEIGHT, bitrate: 5_000_000, framerate: FPS });
+                    videoEncoder.configure({ codec: 'avc1.42e01f', width: VIDEO_WIDTH, height: VIDEO_HEIGHT, bitrate: 5_000_000, framerate: FPS });
                     
                     let audioEncoder;
                     if (finalAudioBuffer) {
@@ -509,5 +509,6 @@
     </script>
 </body>
 </html>
+
 
 
