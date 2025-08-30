@@ -86,11 +86,19 @@
                 </div>
             </section>
         </main>
+        
+        <!-- 画面には見えないけど常に存在するファイル入力 -->
+        <input
+          type="file"
+          id="global-asset-picker"
+          accept="image/*,video/mp4,video/quicktime,video/webm"
+          style="position:fixed; left:-9999px; top:-9999px;"
+        />
     </div>
 
     <!-- JavaScript モジュール -->
     <script type="module">
-        import { Muxer, ArrayBufferTarget } from 'https://unpkg.com/mp4-muxer@4.3.3/dist/mp4-muxer.mjs';
+        // ライブラリは generateVideo 内で動的に import します
 
         function initializeApp() {
             console.log("initializeApp: Application initialization started.");
@@ -106,6 +114,7 @@
             const resultContainer = document.getElementById('result-container');
             const resultVideo = document.getElementById('result-video');
             const downloadLink = document.getElementById('download-link');
+            const globalPicker = document.getElementById('global-asset-picker');
             
             let assets = [];
             let cancellationController;
@@ -115,11 +124,6 @@
             const VIDEO_HEIGHT = 1280;
             const FPS = 30;
             const AUDIO_SAMPLE_RATE = 44100;
-
-            function isiOS() {
-              return /iP(hone|od|ad)/.test(navigator.platform) ||
-                     (navigator.userAgent.includes('Mac') && 'ontouchend' in document);
-            }
 
             function renderAssets() {
                 assetsContainer.innerHTML = '';
@@ -223,11 +227,16 @@
             }
 
             addAssetBtn.addEventListener('click', () => {
+              if (assets.length >= MAX_ASSETS) return;
+              globalPicker.value = ''; // 連続選択対策
+              globalPicker.click(); // iOSでも安定して開きやすい
+            });
+
+            globalPicker.addEventListener('change', async (e) => {
+              const file = e.target.files && e.target.files[0];
+              if (!file) return;
               const idx = addNewClip();
-              if (idx >= 0 && isiOS()) {
-                const el = assetsContainer.querySelector(`input.file-input[data-index="${idx}"]`);
-                if (el) el.click(); // iOS のユーザー操作扱いで開く
-              }
+              if (idx >= 0) await updateClipFile(idx, file);
             });
 
             assetsContainer.addEventListener('input', (e) => {
@@ -322,6 +331,22 @@
                 statusContainer.classList.remove('hidden');
                 resultContainer.classList.add('hidden');
                 updateProgress('準備中...', 0);
+                
+                let Muxer, ArrayBufferTarget;
+                try {
+                  ({ Muxer, ArrayBufferTarget } = await import(
+                    'https://unpkg.com/mp4-muxer@4.3.3/dist/mp4-muxer.mjs'
+                  ));
+                } catch (e) {
+                  statusContainer.classList.remove('hidden');
+                  statusMessage.textContent = 'ライブラリ読み込みに失敗しました。ネットワーク/コンテンツブロッカーの可能性があります。';
+                  progressBar.style.width = '100%';
+                  progressBar.style.backgroundColor = 'red';
+                  console.error('mp4-muxer import failed:', e);
+                  generateBtn.disabled = false;
+                  generateBtn.textContent = '動画を生成する';
+                  return;
+                }
 
                 try {
                     let totalDuration = assets.reduce((sum, a) => sum + a.duration, 0);
