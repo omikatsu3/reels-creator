@@ -109,6 +109,7 @@
             
             let assets = [];
             let cancellationController;
+            let assetResources = []; // To hold loaded elements for cleanup
             const MAX_ASSETS = 5;
             const VIDEO_WIDTH = 720;
             const VIDEO_HEIGHT = 1280;
@@ -273,6 +274,27 @@
                 statusMessage.textContent = message;
                 progressBar.style.width = `${percentage}%`;
             }
+            
+            function seekVideoToTime(videoElement, time) {
+                return new Promise((resolve, reject) => {
+                    const timeout = setTimeout(() => reject(new Error(`Video seeking to ${time} timed out.`)), 5000);
+                    
+                    const onSeeked = () => {
+                        clearTimeout(timeout);
+                        videoElement.removeEventListener('seeked', onSeeked);
+                        requestAnimationFrame(resolve);
+                    };
+
+                    videoElement.addEventListener('seeked', onSeeked, { once: true });
+                    
+                    try {
+                        if ('fastSeek' in videoElement) videoElement.fastSeek(time);
+                        else videoElement.currentTime = time;
+                    } catch (e) {
+                         videoElement.currentTime = time;
+                    }
+                });
+            }
 
             async function generateVideo() {
                 if (!('VideoEncoder' in window)) {
@@ -392,17 +414,38 @@
                     const ctx = canvas.getContext('2d');
 
                     updateProgress('クリップを準備中...', 10);
-                    const assetData = await Promise.all(assets.map(async (asset) => {
+                    assetResources = await Promise.all(assets.map(async (asset) => {
                         if (cancellationController.signal.aborted) throw new DOMException('Aborted by user', 'AbortError');
                         if (asset.type === 'video') {
                            const videoEl = document.createElement('video');
                            videoEl.src = URL.createObjectURL(asset.file);
+                           videoEl.crossOrigin = 'anonymous';
+                           videoEl.playsInline = true;
                            videoEl.muted = true;
-                           await new Promise((resolve, reject) => { videoEl.onloadedmetadata = resolve; videoEl.onerror = reject; });
+                           videoEl.preload = 'auto';
+                           await new Promise((resolve, reject) => {
+                             const onLoadedMeta = () => resolve();
+                             const onError = (e) => reject(e);
+                             videoEl.addEventListener('loadedmetadata', onLoadedMeta, { once: true });
+                             videoEl.addEventListener('error', onError, { once: true });
+                             try { videoEl.load(); } catch {}
+                           });
+                           if (videoEl.readyState < 2) { // HAVE_CURRENT_DATA
+                             await new Promise(res => videoEl.addEventListener('canplay', res, { once: true }));
+                           }
                            return { type: 'video', element: videoEl };
                         } else {
-                            const bitmap = await createImageBitmap(asset.file);
-                            return { type: 'image', element: bitmap };
+                           try {
+                             const bitmap = await createImageBitmap(asset.file);
+                             return { type: 'image-bitmap', element: bitmap };
+                           } catch {
+                             const img = new Image();
+                             img.src = URL.createObjectURL(asset.file);
+                             await new Promise((resolve, reject) => {
+                               img.onload = resolve; img.onerror = reject;
+                             });
+                             return { type: 'image-img', element: img };
+                           }
                         }
                     }));
 
@@ -410,9 +453,9 @@
                     let elapsed = 0;
                     updateProgress('フレームをレンダリング中...', 15);
 
-                    for (let assetIndex = 0; assetIndex < assets.length; assetIndex++) {
+                    for (let assetIndex = 0; assetIndex < assetResources.length; assetIndex++) {
                         const asset = assets[assetIndex];
-                        const data = assetData[assetIndex];
+                        const data = assetResources[assetIndex];
                         const duration = asset.duration;
                         const totalFramesForAsset = Math.round(duration * FPS);
 
@@ -435,20 +478,9 @@
 
                             if (data.type === 'video') {
                                 const timeInCurrentAsset = frameIndex / FPS;
-                                
-                                await new Promise(resolve => {
-                                    el.onseeked = () => requestAnimationFrame(resolve);
-                                    el.currentTime = timeInCurrentAsset;
-                                });
-
-                                if (el.readyState >= 2) {
-                                    const bitmap = await createImageBitmap(el);
-                                    ctx.drawImage(bitmap, dx, dy, dw, dh);
-                                    bitmap.close();
-                                } else {
-                                    console.warn(`Skipping frame for ${asset.file.name} due to insufficient data.`);
-                                }
-                            } else {
+                                await seekVideoToTime(el, timeInCurrentAsset);
+                                ctx.drawImage(el, dx, dy, dw, dh);
+                            } else { // image-bitmap or image-img
                                 ctx.drawImage(el, dx, dy, dw, dh);
                             }
 
@@ -471,15 +503,7 @@
                                 ctx.fillText(asset.subtitle, VIDEO_WIDTH / 2, yPosition);
                             }
                             
-                            const frame = new VideoFrame(canvas, { 
-                                timestamp: timestamp,
-                                colorSpace: {
-                                    primaries: 'bt709',
-                                    transfer: 'bt709',
-                                    matrix: 'bt709',
-                                    fullRange: false
-                                }
-                            });
+                            const frame = new VideoFrame(canvas, { timestamp });
                             videoEncoder.encode(frame);
                             frame.close();
                             frameCounter++;
@@ -514,6 +538,10 @@
                 } finally {
                     generateBtn.disabled = false;
                     generateBtn.textContent = '動画を生成する';
+                    assetResources.forEach(res => {
+                        if (res.type === 'image-bitmap') res.element.close();
+                    });
+                    assetResources = [];
                     setTimeout(() => {
                          if (statusMessage.textContent === '生成が中止されました。') {
                             statusContainer.classList.add('hidden');
