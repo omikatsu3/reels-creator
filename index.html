@@ -335,7 +335,7 @@
                         target: new ArrayBufferTarget(),
                         video: { codec: 'avc', width: VIDEO_WIDTH, height: VIDEO_HEIGHT },
                         audio: finalAudioBuffer ? { codec: 'aac', sampleRate: AUDIO_SAMPLE_RATE, numberOfChannels: 2 } : undefined,
-                        fastStart: true
+                        fastStart: 'in-memory'
                     });
 
                     let videoEncoder = new VideoEncoder({ output: (chunk, meta) => muxer.addVideoChunk(chunk, meta), error: (e) => console.error(e) });
@@ -509,6 +509,4 @@
     </script>
 </body>
 </html>
-
-
 
