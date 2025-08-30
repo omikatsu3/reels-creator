@@ -437,7 +437,9 @@
                                 const timeInCurrentAsset = frameIndex / FPS;
                                 el.currentTime = timeInCurrentAsset;
                                 await new Promise(r => { el.onseeked = r; if(el.readyState >= 3) r(); });
-                                ctx.drawImage(el, dx, dy, dw, dh);
+                                const bitmap = await createImageBitmap(el);
+                                ctx.drawImage(bitmap, dx, dy, dw, dh);
+                                bitmap.close();
                             } else {
                                 ctx.drawImage(el, dx, dy, dw, dh);
                             }
