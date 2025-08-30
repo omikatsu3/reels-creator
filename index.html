@@ -89,11 +89,10 @@
 
     <!-- JavaScript モジュール -->
     <script type="module">
-        // mp4-muxerをCDNからインポート
         import { Muxer, ArrayBufferTarget } from 'https://unpkg.com/mp4-muxer/build/mp4-muxer.mjs';
 
         function initializeApp() {
-            console.log("initializeApp: アプリケーションの初期化を開始します。");
+            console.log("initializeApp: Application initialization started.");
 
             const assetsContainer = document.getElementById('assets-container');
             const addAssetBtn = document.getElementById('add-asset-btn');
@@ -113,6 +112,7 @@
             const VIDEO_WIDTH = 720;
             const VIDEO_HEIGHT = 1280;
             const FPS = 30;
+            const AUDIO_SAMPLE_RATE = 44100;
 
             function renderAssets() {
                 assetsContainer.innerHTML = '';
@@ -137,7 +137,13 @@
                                     <label class="text-sm">表示時間(秒):</label>
                                     <input type="number" data-index="${index}" value="${asset.duration}" min="0.1" step="0.1" class="duration-input w-20 p-2 rounded-md">
                                 </div>` : 
-                                `<div class="text-sm text-gray-400">動画の長さ: ${asset.duration ? asset.duration.toFixed(1) : '計算中...'}秒</div>`
+                                `<div class="space-y-2">
+                                    <div class="text-sm text-gray-400">動画の長さ: ${asset.duration ? asset.duration.toFixed(1) : '計算中...'}秒</div>
+                                    <div class="flex items-center gap-2">
+                                        <input type="checkbox" id="original-audio-checkbox-${index}" data-index="${index}" class="original-audio-checkbox" ${asset.useOriginalAudio ? 'checked' : ''}>
+                                        <label for="original-audio-checkbox-${index}" class="text-sm">元の音声を使用</label>
+                                    </div>
+                                </div>`
                             }
                             <div class="border-t border-gray-600 pt-3 space-y-3">
                                 <input type="text" data-index="${index}" value="${asset.subtitle}" placeholder="字幕 (任意)" class="subtitle-input w-full p-2 rounded-md">
@@ -179,7 +185,8 @@
                         id: Date.now(), file: null, type: 'image', 
                         subtitle: '', 
                         subtitleSettings: { fontSize: 52, position: 80, background: false },
-                        duration: 3, previewUrl: null 
+                        duration: 3, previewUrl: null,
+                        useOriginalAudio: false
                     });
                     renderAssets();
                 }
@@ -234,6 +241,8 @@
                     assets[index].duration = parseFloat(e.target.value) || 3;
                 } else if (e.target.classList.contains('bg-checkbox')) {
                     assets[index].subtitleSettings.background = e.target.checked;
+                } else if (e.target.classList.contains('original-audio-checkbox')) {
+                    assets[index].useOriginalAudio = e.target.checked;
                 }
             });
             
@@ -246,6 +255,9 @@
             });
 
             generateBtn.addEventListener('click', generateVideo);
+            cancelBtn.addEventListener('click', () => {
+                if (cancellationController) cancellationController.abort();
+            });
             
             async function getVideoDuration(file) {
                 return new Promise((resolve) => {
@@ -269,8 +281,6 @@
                 }
                 
                 cancellationController = new AbortController();
-                cancelBtn.onclick = () => cancellationController.abort();
-
                 generateBtn.disabled = true;
                 generateBtn.textContent = '処理中...';
                 statusContainer.classList.remove('hidden');
@@ -279,26 +289,97 @@
 
                 try {
                     let totalDuration = assets.reduce((sum, a) => sum + a.duration, 0);
+                    
+                    updateProgress('音声トラックを準備中...', 2);
+                    const hasBgm = bgmFileInput.files[0];
+                    const hasOriginalAudio = assets.some(a => a.type === 'video' && a.useOriginalAudio);
+                    let finalAudioBuffer = null;
+
+                    if (hasBgm || hasOriginalAudio) {
+                        const audioContext = new AudioContext({ sampleRate: AUDIO_SAMPLE_RATE });
+                        const offlineCtx = new OfflineAudioContext({
+                            numberOfChannels: 2,
+                            length: Math.ceil(totalDuration * AUDIO_SAMPLE_RATE),
+                            sampleRate: AUDIO_SAMPLE_RATE
+                        });
+
+                        if (hasBgm) {
+                            const bgmBuffer = await audioContext.decodeAudioData(await bgmFileInput.files[0].arrayBuffer());
+                            const bgmSource = offlineCtx.createBufferSource();
+                            bgmSource.buffer = bgmBuffer;
+                            bgmSource.loop = true;
+                            bgmSource.connect(offlineCtx.destination);
+                            bgmSource.start(0);
+                        }
+
+                        let elapsedAudioTime = 0;
+                        for (const asset of assets) {
+                            if (cancellationController.signal.aborted) throw new DOMException('Aborted by user', 'AbortError');
+                            if (asset.type === 'video' && asset.useOriginalAudio && asset.file) {
+                                try {
+                                    const clipBuffer = await audioContext.decodeAudioData(await asset.file.arrayBuffer());
+                                    const clipSource = offlineCtx.createBufferSource();
+                                    clipSource.buffer = clipBuffer;
+                                    clipSource.connect(offlineCtx.destination);
+                                    clipSource.start(elapsedAudioTime);
+                                } catch (e) {
+                                    console.warn(`動画クリップの音声デコードに失敗しました: ${asset.file.name}`, e);
+                                }
+                            }
+                            elapsedAudioTime += asset.duration;
+                        }
+                        finalAudioBuffer = await offlineCtx.startRendering();
+                    }
+                    
                     let muxer = new Muxer({
                         target: new ArrayBufferTarget(),
                         video: { codec: 'avc', width: VIDEO_WIDTH, height: VIDEO_HEIGHT },
-                        audio: bgmFileInput.files[0] ? { codec: 'aac', sampleRate: 44100, numberOfChannels: 2 } : undefined,
+                        audio: finalAudioBuffer ? { codec: 'aac', sampleRate: AUDIO_SAMPLE_RATE, numberOfChannels: 2 } : undefined,
                         fastStart: 'fragmented'
                     });
 
-                    let videoEncoder = new VideoEncoder({
-                        output: (chunk, meta) => muxer.addVideoChunk(chunk, meta), error: (e) => console.error(e)
-                    });
+                    let videoEncoder = new VideoEncoder({ output: (chunk, meta) => muxer.addVideoChunk(chunk, meta), error: (e) => console.error(e) });
                     videoEncoder.configure({ codec: 'avc1.42001f', width: VIDEO_WIDTH, height: VIDEO_HEIGHT, bitrate: 5_000_000, framerate: FPS });
                     
-                    let audioEncoder, audioContext, bgmBuffer;
-                    if (bgmFileInput.files[0]) {
-                        updateProgress('BGMをデコード中...', 5);
-                        audioContext = new AudioContext({ sampleRate: 44100 });
-                        const bgmArrayBuffer = await bgmFileInput.files[0].arrayBuffer();
-                        bgmBuffer = await audioContext.decodeAudioData(bgmArrayBuffer);
-                        audioEncoder = new AudioEncoder({ output: (chunk, meta) => muxer.addAudioChunk(chunk, meta), error: (e) => console.error(e) });
-                        audioEncoder.configure({ codec: 'mp4a.40.2', sampleRate: 44100, numberOfChannels: 2, bitrate: 128_000 });
+                    let audioEncoder;
+                    if (finalAudioBuffer) {
+                        audioEncoder = new AudioEncoder({ 
+                            output: (chunk, meta) => muxer.addAudioChunk(chunk, meta), 
+                            error: (e) => {
+                                console.error("AudioEncoder Error:", e);
+                                if (audioEncoder.state !== 'closed') audioEncoder.close();
+                            } 
+                        });
+                        audioEncoder.configure({ codec: 'mp4a.40.2', sampleRate: AUDIO_SAMPLE_RATE, numberOfChannels: 2, bitrate: 128_000 });
+                        
+                        const chunkSize = 1024 * 10; // 効率化のため、より大きなチャンクで処理
+                        const leftChannel = finalAudioBuffer.getChannelData(0);
+                        const rightChannel = finalAudioBuffer.getChannelData(1);
+
+                        for (let i = 0; i < finalAudioBuffer.length; i += chunkSize) {
+                            if (cancellationController.signal.aborted) throw new DOMException('Aborted by user', 'AbortError');
+                            
+                            const leftChunk = leftChannel.slice(i, i + chunkSize);
+                            const rightChunk = rightChannel.slice(i, i + chunkSize);
+
+                            const combinedData = new Float32Array(leftChunk.length + rightChunk.length);
+                            combinedData.set(leftChunk, 0);
+                            combinedData.set(rightChunk, leftChunk.length);
+
+                            const audioFrame = new AudioData({
+                                format: 'f32-planar',
+                                sampleRate: AUDIO_SAMPLE_RATE,
+                                numberOfFrames: leftChunk.length,
+                                numberOfChannels: 2, // 2チャンネルに修正
+                                timestamp: (i / AUDIO_SAMPLE_RATE) * 1_000_000,
+                                data: combinedData
+                            });
+                            
+                            if (audioEncoder.state === 'configured') {
+                                audioEncoder.encode(audioFrame);
+                            }
+                            audioFrame.close();
+                        }
                     }
                     
                     const canvas = document.createElement('canvas');
@@ -333,7 +414,6 @@
 
                         for (let frameIndex = 0; frameIndex < totalFramesForAsset; frameIndex++) {
                             if (cancellationController.signal.aborted) throw new DOMException('Aborted by user', 'AbortError');
-                            const timeInCurrentAsset = frameIndex / FPS;
                             const timestamp = (frameCounter * 1_000_000) / FPS;
 
                             ctx.fillStyle = 'black';
@@ -350,6 +430,7 @@
                             }
 
                             if (data.type === 'video') {
+                                const timeInCurrentAsset = frameIndex / FPS;
                                 el.currentTime = timeInCurrentAsset;
                                 await new Promise(r => { el.onseeked = r; if(el.readyState >= 3) r(); });
                                 ctx.drawImage(el, dx, dy, dw, dh);
@@ -379,26 +460,6 @@
                             const frame = new VideoFrame(canvas, { timestamp });
                             videoEncoder.encode(frame);
                             frame.close();
-                            
-                            if (audioEncoder && bgmBuffer) {
-                                const frameSamples = Math.round(bgmBuffer.sampleRate / FPS);
-                                const audioStart = Math.floor(elapsed * bgmBuffer.sampleRate) + (frameIndex * frameSamples);
-                                if (frameSamples > 0) {
-                                    const audioData = new Float32Array(frameSamples * bgmBuffer.numberOfChannels);
-                                    for (let c = 0; c < bgmBuffer.numberOfChannels; c++) {
-                                        const channelData = bgmBuffer.getChannelData(c);
-                                        for (let i = 0; i < frameSamples; i++) {
-                                            audioData[i * bgmBuffer.numberOfChannels + c] = channelData[(audioStart + i) % channelData.length];
-                                        }
-                                    }
-                                    const audioFrame = new AudioData({
-                                        format: 'f32', sampleRate: bgmBuffer.sampleRate, numberOfFrames: frameSamples,
-                                        numberOfChannels: bgmBuffer.numberOfChannels, timestamp: timestamp, data: audioData,
-                                    });
-                                    audioEncoder.encode(audioFrame);
-                                    audioFrame.close();
-                                }
-                            }
                             frameCounter++;
                         }
                         elapsed += duration;
@@ -423,16 +484,15 @@
                 } catch (err) {
                     if (err.name === 'AbortError') {
                         statusMessage.textContent = '生成が中止されました。';
-                        console.log('Video generation cancelled by user.');
                     } else {
-                        console.error("動画生成中にエラーが発生しました:", err);
+                        console.error("Video generation error:", err);
                         statusMessage.textContent = `エラーが発生しました: ${err.message}`;
                         progressBar.style.backgroundColor = 'red';
                     }
                 } finally {
                     generateBtn.disabled = false;
                     generateBtn.textContent = '動画を生成する';
-                    setTimeout(() => { // 少し待ってから非表示にする
+                    setTimeout(() => {
                          if (statusMessage.textContent === '生成が中止されました。') {
                             statusContainer.classList.add('hidden');
                          }
@@ -449,3 +509,5 @@
     </script>
 </body>
 </html>
+
+
