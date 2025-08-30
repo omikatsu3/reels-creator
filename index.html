@@ -116,6 +116,11 @@
             const FPS = 30;
             const AUDIO_SAMPLE_RATE = 44100;
 
+            function isiOS() {
+              return /iP(hone|od|ad)/.test(navigator.platform) ||
+                     (navigator.userAgent.includes('Mac') && 'ontouchend' in document);
+            }
+
             function renderAssets() {
                 assetsContainer.innerHTML = '';
                 assets.forEach((asset, index) => {
@@ -191,7 +196,9 @@
                         useOriginalAudio: false
                     });
                     renderAssets();
+                    return assets.length - 1; // 追加した要素の index を返す
                 }
+                return -1;
             }
 
             function removeClip(index) {
@@ -215,7 +222,13 @@
                 renderAssets();
             }
 
-            addAssetBtn.addEventListener('click', addNewClip);
+            addAssetBtn.addEventListener('click', () => {
+              const idx = addNewClip();
+              if (idx >= 0 && isiOS()) {
+                const el = assetsContainer.querySelector(`input.file-input[data-index="${idx}"]`);
+                if (el) el.click(); // iOS のユーザー操作扱いで開く
+              }
+            });
 
             assetsContainer.addEventListener('input', (e) => {
                 const index = parseInt(e.target.dataset.index);
@@ -367,7 +380,6 @@
                     let cachedVideoDecoderConfig = null;
                     let videoEncoder = new VideoEncoder({
                       output: (chunk, meta) => {
-                        // Safari は meta.decoderConfig が来ないことがあるので補完する
                         if (meta?.decoderConfig) cachedVideoDecoderConfig = meta.decoderConfig;
                         const safeMeta = (meta && meta.decoderConfig)
                           ? meta
