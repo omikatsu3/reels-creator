@@ -39,6 +39,7 @@
                 <li>対応ファイル: [動画] MP4, WEBM, MOV等 [画像] JPG, PNG, GIF [BGM] MP3, WAV, M4A</li>
                 <li>WebM形式の動画ファイルもご利用いただけます。</li>
                 <li>ファイルサイズが大きい素材 (特にBGM) を使用すると、メモリ不足でブラウザが停止することがあります。</li>
+                <li>お使いのブラウザ(特に一部iOS)が音声処理に未対応の場合、音声なしの動画が生成されます。</li>
                 <li>すべての処理はお使いのデバイス上で行われます。生成された動画はご自身で管理してください。</li>
             </ul>
         </section>
@@ -294,8 +295,9 @@
                     const hasBgm = bgmFileInput.files[0];
                     const hasOriginalAudio = assets.some(a => a.type === 'video' && a.useOriginalAudio);
                     let finalAudioBuffer = null;
+                    const canEncodeAudio = 'AudioEncoder' in window;
 
-                    if (hasBgm || hasOriginalAudio) {
+                    if ((hasBgm || hasOriginalAudio) && canEncodeAudio) {
                         const audioContext = new AudioContext({ sampleRate: AUDIO_SAMPLE_RATE });
                         const offlineCtx = new OfflineAudioContext({
                             numberOfChannels: 2,
@@ -329,12 +331,14 @@
                             elapsedAudioTime += asset.duration;
                         }
                         finalAudioBuffer = await offlineCtx.startRendering();
+                    } else if (hasBgm || hasOriginalAudio) {
+                        console.warn("Audio was requested, but AudioEncoder is not supported. Proceeding with silent video generation.");
                     }
                     
                     let muxer = new Muxer({
                         target: new ArrayBufferTarget(),
                         video: { codec: 'avc', width: VIDEO_WIDTH, height: VIDEO_HEIGHT },
-                        audio: finalAudioBuffer ? { codec: 'aac', sampleRate: AUDIO_SAMPLE_RATE, numberOfChannels: 2 } : undefined,
+                        audio: finalAudioBuffer && canEncodeAudio ? { codec: 'aac', sampleRate: AUDIO_SAMPLE_RATE, numberOfChannels: 2 } : undefined,
                         fastStart: 'in-memory'
                     });
 
@@ -342,7 +346,7 @@
                     videoEncoder.configure({ codec: 'avc1.42e01f', width: VIDEO_WIDTH, height: VIDEO_HEIGHT, bitrate: 5_000_000, framerate: FPS });
                     
                     let audioEncoder;
-                    if (finalAudioBuffer) {
+                    if (finalAudioBuffer && canEncodeAudio) {
                         audioEncoder = new AudioEncoder({ 
                             output: (chunk, meta) => muxer.addAudioChunk(chunk, meta), 
                             error: (e) => {
@@ -352,7 +356,7 @@
                         });
                         audioEncoder.configure({ codec: 'mp4a.40.2', sampleRate: AUDIO_SAMPLE_RATE, numberOfChannels: 2, bitrate: 128_000 });
                         
-                        const chunkSize = 1024 * 10; // 効率化のため、より大きなチャンクで処理
+                        const chunkSize = 1024 * 10;
                         const leftChannel = finalAudioBuffer.getChannelData(0);
                         const rightChannel = finalAudioBuffer.getChannelData(1);
 
@@ -370,7 +374,7 @@
                                 format: 'f32-planar',
                                 sampleRate: AUDIO_SAMPLE_RATE,
                                 numberOfFrames: leftChunk.length,
-                                numberOfChannels: 2, // 2チャンネルに修正
+                                numberOfChannels: 2,
                                 timestamp: (i / AUDIO_SAMPLE_RATE) * 1_000_000,
                                 data: combinedData
                             });
@@ -472,7 +476,7 @@
                     muxer.finalize();
                     
                     const { buffer } = muxer.target;
-                    const blob = new Blob([buffer], { type: 'video/mp4' });
+                    const blob = new Blob([buffer], { type: 'video/hundred_and_twenty_eight' });
                     const url = URL.createObjectURL(blob);
 
                     resultVideo.src = url;
