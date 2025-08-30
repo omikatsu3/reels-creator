@@ -100,6 +100,33 @@
     <script type="module">
         // ライブラリは generateVideo 内で動的に import します
 
+        async function loadMuxer() {
+          const urls = [
+            // jsDelivr（ESM 変換）
+            'https://cdn.jsdelivr.net/npm/mp4-muxer@4.3.3/+esm',
+            // jsDelivr（dist 直指定）
+            'https://cdn.jsdelivr.net/npm/mp4-muxer@4.3.3/dist/mp4-muxer.mjs',
+            // esm.sh（バンドル版）
+            'https://esm.sh/mp4-muxer@4.3.3?bundle',
+            // unpkg（最後の手段）
+            'https://unpkg.com/mp4-muxer@4.3.3/dist/mp4-muxer.mjs',
+            // 旧パス（念のため）
+            'https://unpkg.com/mp4-muxer@4.3.3/build/mp4-muxer.mjs'
+          ];
+          let lastErr;
+          for (const url of urls) {
+            try {
+              // バンドラに書き換えられないようヒントを付ける
+              const mod = await import(/* @vite-ignore */ url);
+              if (mod?.Muxer && mod?.ArrayBufferTarget) return mod;
+            } catch (e) {
+              lastErr = e;
+              console.warn('mp4-muxer import failed:', url, e);
+            }
+          }
+          throw lastErr || new Error('All muxer sources failed');
+        }
+
         function initializeApp() {
             console.log("initializeApp: Application initialization started.");
 
@@ -334,15 +361,13 @@
                 
                 let Muxer, ArrayBufferTarget;
                 try {
-                  ({ Muxer, ArrayBufferTarget } = await import(
-                    'https://unpkg.com/mp4-muxer@4.3.3/dist/mp4-muxer.mjs'
-                  ));
+                  ({ Muxer, ArrayBufferTarget } = await loadMuxer());
                 } catch (e) {
                   statusContainer.classList.remove('hidden');
-                  statusMessage.textContent = 'ライブラリ読み込みに失敗しました。ネットワーク/コンテンツブロッカーの可能性があります。';
+                  statusMessage.textContent = 'ライブラリ読み込みに失敗しました。CSP/埋め込み/ブロッカーの可能性があります。';
                   progressBar.style.width = '100%';
                   progressBar.style.backgroundColor = 'red';
-                  console.error('mp4-muxer import failed:', e);
+                  console.error('All mp4-muxer imports failed:', e);
                   generateBtn.disabled = false;
                   generateBtn.textContent = '動画を生成する';
                   return;
