@@ -202,7 +202,7 @@
                             </div>
                         </div>
                         <button data-index="${index}" class="remove-btn flex-shrink-0 p-2 rounded-full btn-danger text-white">
-                            <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm4 0a1 1 0 012 0v6a1 1 0 11-2 0V8z" clip-rule="evenodd" /></svg>
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2_0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm4 0a1 1 0 012 0v6a1 1 0 11-2 0V8z" clip-rule="evenodd" /></svg>
                         </button>
                     `;
                     assetsContainer.appendChild(assetEl);
@@ -454,7 +454,9 @@
                         
                         const chunkSize = 1024 * 10;
                         const leftChannel = finalAudioBuffer.getChannelData(0);
-                        const rightChannel = finalAudioBuffer.getChannelData(1);
+                        const rightChannel = finalAudioBuffer.numberOfChannels > 1
+                            ? finalAudioBuffer.getChannelData(1)
+                            : leftChannel; // Mono-to-Stereo fallback
 
                         for (let i = 0; i < finalAudioBuffer.length; i += chunkSize) {
                             if (cancellationController.signal.aborted) throw new DOMException('Aborted by user', 'AbortError');
