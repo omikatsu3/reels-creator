@@ -102,21 +102,15 @@
 
         async function loadMuxer() {
           const urls = [
-            // jsDelivr（ESM 変換）
             'https://cdn.jsdelivr.net/npm/mp4-muxer@4.3.3/+esm',
-            // jsDelivr（dist 直指定）
             'https://cdn.jsdelivr.net/npm/mp4-muxer@4.3.3/dist/mp4-muxer.mjs',
-            // esm.sh（バンドル版）
             'https://esm.sh/mp4-muxer@4.3.3?bundle',
-            // unpkg（最後の手段）
             'https://unpkg.com/mp4-muxer@4.3.3/dist/mp4-muxer.mjs',
-            // 旧パス（念のため）
             'https://unpkg.com/mp4-muxer@4.3.3/build/mp4-muxer.mjs'
           ];
           let lastErr;
           for (const url of urls) {
             try {
-              // バンドラに書き換えられないようヒントを付ける
               const mod = await import(/* @vite-ignore */ url);
               if (mod?.Muxer && mod?.ArrayBufferTarget) return mod;
             } catch (e) {
@@ -125,6 +119,166 @@
             }
           }
           throw lastErr || new Error('All muxer sources failed');
+        }
+
+        async function canEncodeAAC(sampleRate = 44100) {
+          if (!('AudioEncoder' in window) || !AudioEncoder.isConfigSupported) return false;
+          try {
+            const { supported } = await AudioEncoder.isConfigSupported({
+              codec: 'mp4a.40.2',
+              sampleRate,
+              numberOfChannels: 2,
+              bitrate: 128_000,
+            });
+            return !!supported;
+          } catch { return false; }
+        }
+
+        async function recordWithMediaRecorderFallback({
+          canvas,
+          assets,
+          bgmFile,
+          totalDuration,
+          fps = 30,
+        }) {
+          const ac = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 44100 });
+          const dest = ac.createMediaStreamDestination();
+          const base = ac.currentTime + 0.3;
+
+          if (bgmFile) {
+            const buf = await ac.decodeAudioData(await bgmFile.arrayBuffer());
+            const src = ac.createBufferSource();
+            src.buffer = buf;
+            src.loop = true;
+            src.connect(dest);
+            src.start(base);
+            src.stop(base + totalDuration + 0.1);
+          }
+
+          let t = 0;
+          for (const a of assets) {
+            if (a.type === 'video' && a.useOriginalAudio && a.file) {
+              try {
+                const buf = await ac.decodeAudioData(await a.file.arrayBuffer());
+                const src = ac.createBufferSource();
+                src.buffer = buf;
+                src.connect(dest);
+                src.start(base + t);
+                src.stop(base + t + a.duration + 0.05);
+              } catch (e) {
+                console.warn('音声デコード失敗:', a.file?.name, e);
+              }
+            }
+            t += a.duration;
+          }
+
+          const stream = canvas.captureStream(fps);
+          dest.stream.getAudioTracks().forEach(tr => stream.addTrack(tr));
+
+          const mime = MediaRecorder.isTypeSupported('video/mp4;codecs=avc1.42E01E,mp4a.40.2')
+            ? 'video/mp4;codecs=avc1.42E01E,mp4a.40.2'
+            : 'video/mp4';
+
+          const rec = new MediaRecorder(stream, { mimeType: mime });
+          const chunks = [];
+          rec.ondataavailable = e => { if (e.data && e.data.size) chunks.push(e.data); };
+
+          const ctx = canvas.getContext('2d');
+          const W = canvas.width, H = canvas.height;
+          const start = performance.now();
+          let currentAssetIndex = 0;
+          let assetStart = 0;
+
+          const prepared = [];
+          for (const a of assets) {
+            if (a.type === 'video') {
+              const v = document.createElement('video');
+              v.src = URL.createObjectURL(a.file);
+              v.muted = true; v.playsInline = true; v.preload = 'auto';
+              await new Promise((res, rej) => {
+                v.onloadedmetadata = () => res();
+                v.onerror = rej;
+                try { v.load(); } catch {}
+              });
+              prepared.push({ ...a, videoEl: v });
+            } else {
+              const img = new Image();
+              img.src = URL.createObjectURL(a.file);
+              await new Promise((res, rej) => { img.onload = res; img.onerror = rej; });
+              prepared.push({ ...a, imageEl: img });
+            }
+          }
+
+          rec.start();
+          if (ac.state === 'suspended') { try { await ac.resume(); } catch {} }
+
+          return await new Promise((resolve) => {
+            function tick() {
+              const now = performance.now();
+              const tSec = (now - start) / 1000;
+              if (tSec >= totalDuration) {
+                ctx.fillStyle = 'black'; ctx.fillRect(0, 0, W, H);
+                rec.stop();
+                return;
+              }
+
+              while (tSec > assetStart + prepared[currentAssetIndex].duration && currentAssetIndex < prepared.length - 1) {
+                assetStart += prepared[currentAssetIndex].duration;
+                currentAssetIndex++;
+              }
+              const a = prepared[currentAssetIndex];
+
+              ctx.fillStyle = 'black'; ctx.fillRect(0, 0, W, H);
+
+              const drawFit = (elW, elH, drawFn) => {
+                const elAspect = elW / elH;
+                const canvasAspect = W / H;
+                let dw, dh, dx, dy;
+                if (elAspect > canvasAspect) { dh = H; dw = dh * elAspect; dx = (W - dw) / 2; dy = 0; }
+                else { dw = W; dh = dw / elAspect; dy = (H - dh) / 2; dx = 0; }
+                drawFn(dx, dy, dw, dh);
+              };
+
+              if (a.type === 'video') {
+                const local = tSec - assetStart;
+                if (Math.abs((a.videoEl.currentTime ?? 0) - local) > 0.05) {
+                  try { if ('fastSeek' in a.videoEl) a.videoEl.fastSeek(local); else a.videoEl.currentTime = local; } catch {}
+                }
+                a.videoEl.play().catch(()=>{});
+                drawFit(a.videoEl.videoWidth, a.videoEl.videoHeight, (dx,dy,dw,dh)=>ctx.drawImage(a.videoEl, dx,dy,dw,dh));
+              } else {
+                const img = a.imageEl;
+                drawFit(img.naturalWidth, img.naturalHeight, (dx,dy,dw,dh)=>ctx.drawImage(img, dx,dy,dw,dh));
+              }
+
+              if (a.subtitle) {
+                const s = a.subtitleSettings;
+                ctx.font = `bold ${s.fontSize}px "Noto Sans JP", sans-serif`;
+                ctx.textAlign = 'center';
+                const y = H * (s.position / 100);
+                if (s.background) {
+                  const m = ctx.measureText(a.subtitle);
+                  const th = m.actualBoundingBoxAscent + m.actualBoundingBoxDescent;
+                  ctx.fillStyle = 'rgba(80,80,80,0.7)';
+                  ctx.fillRect(0, y - th * 1.2, W, th * 1.6);
+                }
+                ctx.fillStyle = 'white';
+                ctx.shadowColor = 'black';
+                ctx.shadowBlur = 10;
+                ctx.fillText(a.subtitle, W/2, y);
+              }
+
+              requestAnimationFrame(tick);
+            }
+
+            rec.onstop = async () => {
+              const blob = new Blob(chunks, { type: 'video/mp4' });
+              resolve(blob);
+              try { ac.close(); } catch {}
+            };
+
+            requestAnimationFrame(tick);
+          });
         }
 
         function initializeApp() {
@@ -145,7 +299,7 @@
             
             let assets = [];
             let cancellationController;
-            let assetResources = []; // To hold loaded elements for cleanup
+            let assetResources = [];
             const MAX_ASSETS = 5;
             const VIDEO_WIDTH = 720;
             const VIDEO_HEIGHT = 1280;
@@ -168,7 +322,7 @@
                         <div class="flex-grow w-full space-y-3">
                             <div>
                                 <label class="block text-sm font-medium text-gray-300 mb-1">クリップ ${index + 1} のファイル</label>
-                                <input type="file" data-index="${index}" accept="image/*,video/mp4,video/webm,video/quicktime" class="file-input w-full text-sm rounded-lg cursor-pointer focus:outline-none">
+                                <input type="file" data-index="${index}" accept="image/*,video/mp4,video/webm,video/quicktime" class="file-input w-full text-sm rounded-lg cursor-pointer focus:outline-none" style="display:none;">
                             </div>
                              ${asset.type !== 'video' ? 
                                 `<div class="flex items-center gap-2">
@@ -202,7 +356,7 @@
                             </div>
                         </div>
                         <button data-index="${index}" class="remove-btn flex-shrink-0 p-2 rounded-full btn-danger text-white">
-                            <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2_0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm4 0a1 1 0 012 0v6a1 1 0 11-2 0V8z" clip-rule="evenodd" /></svg>
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm4 0a1 1 0 012 0v6a1 1 0 11-2 0V8z" clip-rule="evenodd" /></svg>
                         </button>
                     `;
                     assetsContainer.appendChild(assetEl);
@@ -227,7 +381,7 @@
                         useOriginalAudio: false
                     });
                     renderAssets();
-                    return assets.length - 1; // 追加した要素の index を返す
+                    return assets.length - 1;
                 }
                 return -1;
             }
@@ -255,8 +409,8 @@
 
             addAssetBtn.addEventListener('click', () => {
               if (assets.length >= MAX_ASSETS) return;
-              globalPicker.value = ''; // 連続選択対策
-              globalPicker.click(); // iOSでも安定して開きやすい
+              globalPicker.value = '';
+              globalPicker.click();
             });
 
             globalPicker.addEventListener('change', async (e) => {
@@ -375,13 +529,32 @@
 
                 try {
                     let totalDuration = assets.reduce((sum, a) => sum + a.duration, 0);
-                    
-                    updateProgress('音声トラックを準備中...', 2);
                     const hasBgm = bgmFileInput.files[0];
                     const hasOriginalAudio = assets.some(a => a.type === 'video' && a.useOriginalAudio);
-                    let finalAudioBuffer = null;
-                    const canEncodeAudio = 'AudioEncoder' in window;
+                    const canEncodeAudio = await canEncodeAAC(AUDIO_SAMPLE_RATE);
 
+                    if ((hasBgm || hasOriginalAudio) && !canEncodeAudio) {
+                      updateProgress('iOS向け録画モードで音声付き出力...', 5);
+                      const canvas = document.createElement('canvas');
+                      canvas.width = VIDEO_WIDTH; canvas.height = VIDEO_HEIGHT;
+                      const blob = await recordWithMediaRecorderFallback({
+                        canvas,
+                        assets,
+                        bgmFile: bgmFileInput.files[0],
+                        totalDuration,
+                        fps: FPS,
+                      });
+                      const url = URL.createObjectURL(blob);
+                      resultVideo.src = url;
+                      downloadLink.href = url;
+                      downloadLink.download = `reels-video-${Date.now()}.mp4`;
+                      statusContainer.classList.add('hidden');
+                      resultContainer.classList.remove('hidden');
+                      return;
+                    }
+                    
+                    updateProgress('音声トラックを準備中...', 2);
+                    let finalAudioBuffer = null;
                     if ((hasBgm || hasOriginalAudio) && canEncodeAudio) {
                         const audioContext = new AudioContext({ sampleRate: AUDIO_SAMPLE_RATE });
                         const offlineCtx = new OfflineAudioContext({
@@ -416,8 +589,6 @@
                             elapsedAudioTime += asset.duration;
                         }
                         finalAudioBuffer = await offlineCtx.startRendering();
-                    } else if (hasBgm || hasOriginalAudio) {
-                        console.warn("Audio was requested, but AudioEncoder is not supported. Proceeding with silent video generation.");
                     }
                     
                     let muxer = new Muxer({
@@ -456,7 +627,7 @@
                         const leftChannel = finalAudioBuffer.getChannelData(0);
                         const rightChannel = finalAudioBuffer.numberOfChannels > 1
                             ? finalAudioBuffer.getChannelData(1)
-                            : leftChannel; // Mono-to-Stereo fallback
+                            : leftChannel;
 
                         for (let i = 0; i < finalAudioBuffer.length; i += chunkSize) {
                             if (cancellationController.signal.aborted) throw new DOMException('Aborted by user', 'AbortError');
@@ -506,7 +677,7 @@
                              videoEl.addEventListener('error', onError, { once: true });
                              try { videoEl.load(); } catch {}
                            });
-                           if (videoEl.readyState < 2) { // HAVE_CURRENT_DATA
+                           if (videoEl.readyState < 2) {
                              await new Promise(res => videoEl.addEventListener('canplay', res, { once: true }));
                            }
                            return { type: 'video', element: videoEl };
@@ -556,7 +727,7 @@
                                 const timeInCurrentAsset = frameIndex / FPS;
                                 await seekVideoToTime(el, timeInCurrentAsset);
                                 ctx.drawImage(el, dx, dy, dw, dh);
-                            } else { // image-bitmap or image-img
+                            } else {
                                 ctx.drawImage(el, dx, dy, dw, dh);
                             }
 
